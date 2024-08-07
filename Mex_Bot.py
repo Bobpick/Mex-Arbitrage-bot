@@ -66,8 +66,18 @@ class Portfolio:
                 self.current_balances['USDT'] += usdt_received
 
                 # Update exchange balances
-                await exchange.create_order('MEX/USDT', 'limit', 'sell', mex_to_convert, ticker['last'])
+                exchange.balances['MEX'] -= mex_to_convert
+                exchange.balances['USDT'] += usdt_received
 
+                # Record the trade
+                trade = {
+                    'symbol': 'MEX/USDT',
+                    'side': 'sell',
+                    'amount': mex_to_convert,
+                    'price': ticker['last'],
+                    'cost': usdt_received
+                }
+                self.record_trade(trade, exchange.exchange_id, is_initial_conversion=True)
                 logging.info(
                     f"Converted {mex_to_convert:.2f} MEX to {usdt_received:.2f} USDT on {exchange.exchange_id}")
             except Exception as e:
@@ -106,15 +116,18 @@ class Portfolio:
 
         return total_value
 
-    def record_trade(self, trade, exchange_id):
-        self.trade_history.append({
+    def record_trade(self, trade, exchange_id, is_initial_conversion=False):
+        trade_record = {
             'time': datetime.now(),
             'symbol': trade['symbol'],
             'side': trade['side'],
             'amount': trade['amount'],
             'price': trade['price'],
-            'exchange': exchange_id
-        })
+            'cost': trade['cost'],
+            'exchange': exchange_id,
+            'is_initial_conversion': is_initial_conversion
+        }
+        self.trade_history.append(trade_record)
     def get_coin_changes(self):
         changes = {}
         for coin in self.current_balances:
@@ -138,22 +151,19 @@ class Portfolio:
     def get_performance_report(self):
         total_mex_bought = sum(trade['amount'] for trade in self.trade_history if trade['side'] == 'buy')
         total_mex_sold = sum(trade['amount'] for trade in self.trade_history if trade['side'] == 'sell')
-        total_usdt_spent = sum(
-            trade['amount'] * trade['price'] for trade in self.trade_history if trade['side'] == 'buy')
-        total_usdt_gained = sum(
-            trade['amount'] * trade['price'] for trade in self.trade_history if trade['side'] == 'sell')
+        total_usdt_spent = sum(trade['cost'] for trade in self.trade_history if trade['side'] == 'buy')
+        total_usdt_gained = sum(trade['cost'] for trade in self.trade_history if trade['side'] == 'sell')
 
         total_profit = total_usdt_gained - total_usdt_spent
 
         report = f"Performance Report\n"
         report += f"Time period: {self.start_time} to {datetime.now()}\n"
         report += f"Total trades: {len(self.trade_history)}\n"
-        report += f"Total MEX bought: {total_mex_bought:.0f}\n"
-        report += f"Total MEX sold: {total_mex_sold:.0f}\n"
+        report += f"Total MEX bought: {total_mex_bought:.2f}\n"
+        report += f"Total MEX sold: {total_mex_sold:.2f}\n"
         report += f"Total USDT spent: {total_usdt_spent:.8f}\n"
         report += f"Total USDT gained: {total_usdt_gained:.8f}\n"
         report += f"Total profit: {total_profit:.8f} USDT\n\n"
-
         report += "Balance Changes:\n"
         for coin in ['MEX', 'USDT']:
             initial = self.initial_balances[coin]
@@ -198,6 +208,7 @@ from datetime import datetime
 class SandboxExchange:
     def __init__(self, exchange_id):
         self.exchange_id = exchange_id
+        self.id = exchange_id  # Add this line
         self.balances = {'USDT': 0, 'MEX': 80_000_000}
         self.orders = []
         self.trades = []
@@ -277,8 +288,8 @@ class SandboxExchange:
 
     async def fetch_balance(self):
         return {
-            'total': self.balances.copy(),
-            'free': self.balances.copy(),  # In this simple simulation, all balance is free
+            'total': self.balances,
+            'free': self.balances,  # In this simple simulation, all balance is free
             'used': {currency: 0 for currency in self.balances}
         }
 
@@ -354,21 +365,32 @@ async def initial_conversion(self, exchanges):
             mex_to_convert = self.initial_mex / (2 * self.num_exchanges)
             usdt_received = mex_to_convert * ticker['last']
 
-            # Update balances
+            # Update portfolio balances
             self.current_balances['MEX'] -= mex_to_convert
             self.current_balances['USDT'] += usdt_received
 
-            # Update the exchange's balances as well
-            await exchange.create_order('MEX/USDT', 'market', 'sell', mex_to_convert)
+            # Update exchange balances
+            exchange.balances['MEX'] -= mex_to_convert
+            exchange.balances['USDT'] += usdt_received
 
-            exchange_id = getattr(exchange, 'exchange_id', getattr(exchange, 'id', 'Unknown'))
-            logging.info(f"Converted {mex_to_convert:.2f} MEX to {usdt_received:.2f} USDT on {exchange_id}")
+            # Create a sell order (this is simulated in sandbox mode)
+            order = {
+                'symbol': 'MEX/USDT',
+                'type': 'market',
+                'side': 'sell',
+                'amount': mex_to_convert,
+                'price': ticker['last']
+            }
+            self.record_trade(trade, exchange.exchange_id, is_initial_conversion=True)
+
+            logging.info(f"Converted {mex_to_convert:.2f} MEX to {usdt_received:.2f} USDT on {exchange.exchange_id}")
         except Exception as e:
-            exchange_id = getattr(exchange, 'exchange_id', getattr(exchange, 'id', 'Unknown'))
-            logging.error(f"Error during initial conversion on {exchange_id}: {e}")
+            logging.error(f"Error during initial conversion on {exchange.exchange_id}: {e}")
 
-        self.current_balances = total_balance
-        logging.info(f"Updated balances: {self.current_balances}")
+    # Update balances after conversion
+    await self.update_balances(exchanges)
+
+
     async def calculate_total_value(self, exchanges):
         await self.update_balances(exchanges)
         total_value = self.current_balances['USDT']
@@ -414,24 +436,45 @@ async def initial_conversion(self, exchanges):
         percent_change = (change / self.initial_total_value * 100) if self.initial_total_value > 0 else 0
         return change, percent_change
 
-
     def get_performance_report(self):
-        total_mex_bought = sum(trade['amount'] for trade in self.trade_history if trade['side'] == 'buy')
-        total_mex_sold = sum(trade['amount'] for trade in self.trade_history if trade['side'] == 'sell')
-        total_usdt_spent = sum(trade['amount'] * trade['price'] for trade in self.trade_history if trade['side'] == 'buy')
-        total_usdt_gained = sum(trade['amount'] * trade['price'] for trade in self.trade_history if trade['side'] == 'sell')
+        initial_conversion_mex = sum(trade['amount'] for trade in self.trade_history if trade['is_initial_conversion'])
+        initial_conversion_usdt = sum(trade['cost'] for trade in self.trade_history if trade['is_initial_conversion'])
 
-        total_profit = total_usdt_gained - total_usdt_spent
+        total_mex_bought = sum(trade['amount'] for trade in self.trade_history if
+                               trade['side'] == 'buy' and not trade['is_initial_conversion'])
+        total_mex_sold = sum(trade['amount'] for trade in self.trade_history if
+                             trade['side'] == 'sell' and not trade['is_initial_conversion'])
+        total_usdt_spent = sum(trade['cost'] for trade in self.trade_history if
+                               trade['side'] == 'buy' and not trade['is_initial_conversion'])
+        total_usdt_gained = sum(trade['cost'] for trade in self.trade_history if
+                                trade['side'] == 'sell' and not trade['is_initial_conversion'])
+
+        trading_profit = total_usdt_gained - total_usdt_spent
 
         report = f"Performance Report\n"
         report += f"Time period: {self.start_time} to {datetime.now()}\n"
-        report += f"Total trades: {len(self.trade_history)}\n"
-        report += f"Total MEX bought: {total_mex_bought:.0f}\n"
-        report += f"Total MEX sold: {total_mex_sold:.0f}\n"
+        report += f"Initial Conversion: {initial_conversion_mex:.2f} MEX to {initial_conversion_usdt:.8f} USDT\n"
+        report += f"Total trades (excluding initial conversion): {len([t for t in self.trade_history if not t['is_initial_conversion']])}\n"
+        report += f"Total MEX bought: {total_mex_bought:.2f}\n"
+        report += f"Total MEX sold: {total_mex_sold:.2f}\n"
         report += f"Total USDT spent: {total_usdt_spent:.8f}\n"
         report += f"Total USDT gained: {total_usdt_gained:.8f}\n"
-        report += f"Total profit: {total_profit:.8f} USDT\n\n"
+        report += f"Trading profit: {trading_profit:.8f} USDT\n\n"
 
+        report += "Balance Changes:\n"
+        for coin in ['MEX', 'USDT']:
+            initial = self.initial_balances[coin]
+            current = self.current_balances[coin]
+            change = current - initial
+            percent_change = (change / initial * 100) if initial > 0 else 0
+            if coin == 'MEX':
+                report += f"{coin}: Initial: {initial:.0f}, Current: {current:.0f}, "
+                report += f"Change: {change:.0f} ({percent_change:.2f}%)\n"
+            else:
+                report += f"{coin}: Initial: {initial:.8f}, Current: {current:.8f}, "
+                report += f"Change: {change:.8f} ({percent_change:.2f}%)\n"
+
+        return report
         report += "Balance Changes:\n"
         for coin in ['MEX', 'USDT']:
             initial = self.initial_balances[coin]
@@ -731,9 +774,9 @@ def calculate_arbitrage(prices):
     potential_profit_usdt = price_difference * mex_amount
 
     logging.info(f"Arbitrage opportunity: {min_price_exchange} -> {max_price_exchange}")
-    logging.info(f"Price difference: {price_difference:.8f} USDT")
-    logging.info(f"Percentage difference: {percentage_difference:.2f}%")
-    logging.info(f"Potential profit for 40M MEX: {potential_profit_usdt:.2f} USDT")
+    #logging.info(f"Price difference: {price_difference:.8f} USDT")
+    #logging.info(f"Percentage difference: {percentage_difference:.2f}%")
+    #logging.info(f"Potential profit for 40M MEX: {potential_profit_usdt:.2f} USDT")
 
     return percentage_difference, min_price_exchange, max_price_exchange, price_difference, potential_profit_usdt
 async def execute_trade(exchange, symbol, side, amount, price):
@@ -764,7 +807,7 @@ async def execute_arbitrage(min_price_exchange, max_price_exchange, min_price, m
         risk_per_trade = 0.01  # 1% risk per trade
         position_size = available_balance * risk_per_trade / (max_price - min_price)
 
-        logging.info(f"Calculated position size: {position_size}")
+        #logging.info(f"Calculated position size: {position_size}")
 
         # Execute buy order
         buy_order = await execute_trade(exchange_min, symbol, 'buy', position_size, min_price)
@@ -831,7 +874,7 @@ def generate_mock_data(start_date):
     return df
 
 async def fetch_all_historical_data(symbol='MEX/USDT'):
-    logging.info("Starting fetch_all_historical_data")
+    #logging.info("Starting fetch_all_historical_data")
     start_date = datetime.now() - timedelta(days=180)  # 6 months ago
     logging.debug(f"Fetching data from {start_date} to now for symbol {symbol}")
 
@@ -855,7 +898,7 @@ async def fetch_all_historical_data(symbol='MEX/USDT'):
 
         historical_data = {exchange.id: df for exchange, df in zip(exchanges, results) if df is not None}
 
-        logging.info(f"Finished fetch_all_historical_data. Data fetched for {len(historical_data)} exchanges.")
+        #logging.info(f"Finished fetch_all_historical_data. Data fetched for {len(historical_data)} exchanges.")
         for exchange, data in historical_data.items():
             if data is not None:
                 logging.debug(
@@ -913,28 +956,33 @@ def calculate_profits(portfolio):
     weekly_cutoff = now - timedelta(weeks=1)
     monthly_cutoff = now - timedelta(days=30)
 
-    daily_profit = sum(trade['amount'] * (trade['price'] if trade['side'] == 'sell' else -trade['price'])
-                       for trade in portfolio.trade_history if trade['time'] > daily_cutoff)
-    weekly_profit = sum(trade['amount'] * (trade['price'] if trade['side'] == 'sell' else -trade['price'])
-                        for trade in portfolio.trade_history if trade['time'] > weekly_cutoff)
-    monthly_profit = sum(trade['amount'] * (trade['price'] if trade['side'] == 'sell' else -trade['price'])
-                         for trade in portfolio.trade_history if trade['time'] > monthly_cutoff)
+    def profit_in_period(trades):
+        return sum(trade['cost'] if trade['side'] == 'sell' else -trade['cost']
+                   for trade in trades if not trade['is_initial_conversion'])
+
+    daily_profit = profit_in_period([t for t in portfolio.trade_history if t['time'] > daily_cutoff])
+    weekly_profit = profit_in_period([t for t in portfolio.trade_history if t['time'] > weekly_cutoff])
+    monthly_profit = profit_in_period([t for t in portfolio.trade_history if t['time'] > monthly_cutoff])
 
     return daily_profit, weekly_profit, monthly_profit
 
-
+def calculate_position_size(exchange, max_percentage=0.95):
+    usdt_balance = exchange.balances['USDT']
+    mex_price = prices[exchange.exchange_id]
+    max_mex_amount = (usdt_balance * max_percentage) / mex_price
+    return min(max_mex_amount, 40_000_000)  # Limit to 40M MEX or available balance
 def prepare_ml_data(portfolio):
-    logging.info("Preparing ML data...")
+    #logging.info("Preparing ML data...")
     df = pd.DataFrame(portfolio.trade_history)
 
     if df.empty:
-        logging.info("Trade history is empty.")
+        #logging.info("Trade history is empty.")
         return None
 
-    logging.info(f"Trade history columns: {df.columns.tolist()}")
-    logging.info(f"Sample data:\n{df.head().to_string()}")
-    logging.info(f"Data types:\n{df.dtypes}")
-    logging.info(f"Number of trades in dataset: {len(df)}")
+    #logging.info(f"Trade history columns: {df.columns.tolist()}")
+    #logging.info(f"Sample data:\n{df.head().to_string()}")
+    #logging.info(f"Data types:\n{df.dtypes}")
+    #logging.info(f"Number of trades in dataset: {len(df)}")
 
     # Here, add the necessary data preparation steps
     df['timestamp'] = pd.to_datetime(df['time'])
@@ -948,17 +996,11 @@ def prepare_ml_data(portfolio):
     df['target'] = df.groupby('symbol')['returns'].shift(-1) > 0
 
     return df.dropna()
-def train_ml_model(df):
-    X = df[['average_price', 'returns', 'volatility']]
-    y = df['target']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
+
+def train_ml_model(X_train, y_train):
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
-    predictions = model.predict(X_test)
-    accuracy = accuracy_score(y_test, predictions)
-    logging.info(f"ML model accuracy: {accuracy:.2f}")
-
     return model
 
 
@@ -971,18 +1013,89 @@ def show_notifications():
         toaster.show_toast("Arbitrage Bot Notification", "No trades executed yet", duration=10)
 
 
+async def rebalance_usdt(exchanges, min_balance=50):
+    balances = await asyncio.gather(*[exchange.fetch_balance() for exchange in exchanges])
+
+    def get_usdt_balance(balance):
+        if 'USDT' in balance:
+            return balance['USDT']
+        elif 'total' in balance and 'USDT' in balance['total']:
+            return balance['total']['USDT']
+        else:
+            return 0  # Return 0 if USDT balance is not found
+
+    usdt_balances = {getattr(ex, 'id', ex.exchange_id): get_usdt_balance(bal) for ex, bal in zip(exchanges, balances)}
+
+    low_balance_exchanges = [ex for ex, bal in usdt_balances.items() if bal < min_balance]
+    high_balance_exchanges = [ex for ex, bal in usdt_balances.items() if bal > min_balance * 2]
+
+    for low_ex in low_balance_exchanges:
+        if high_balance_exchanges:
+            high_ex = high_balance_exchanges.pop(0)
+            transfer_amount = min(usdt_balances[high_ex] - min_balance, min_balance)
+
+            # Find the actual exchange objects
+            from_exchange = next(ex for ex in exchanges if getattr(ex, 'id', ex.exchange_id) == high_ex)
+            to_exchange = next(ex for ex in exchanges if getattr(ex, 'id', ex.exchange_id) == low_ex)
+
+            if isinstance(from_exchange, SandboxExchange) and isinstance(to_exchange, SandboxExchange):
+                # For sandbox exchanges, directly adjust the balances
+                from_exchange.balances['USDT'] -= transfer_amount
+                to_exchange.balances['USDT'] += transfer_amount
+            else:
+                # For real exchanges, use the transfer method
+                await from_exchange.transfer('USDT', transfer_amount, to_exchange.id)
+
+            logging.info(f"Transferred {transfer_amount} USDT from {high_ex} to {low_ex}")
+
+
+async def rebalance_mex(exchanges, min_balance=20_000_000):  # Adjust min_balance as needed
+    balances = await asyncio.gather(*[exchange.fetch_balance() for exchange in exchanges])
+
+    def get_mex_balance(balance):
+        if 'MEX' in balance:
+            return balance['MEX']
+        elif 'total' in balance and 'MEX' in balance['total']:
+            return balance['total']['MEX']
+        else:
+            return 0
+
+    mex_balances = {getattr(ex, 'id', ex.exchange_id): get_mex_balance(bal) for ex, bal in zip(exchanges, balances)}
+
+    avg_balance = sum(mex_balances.values()) / len(mex_balances)
+    exchanges_to_adjust = [(ex, bal) for ex, bal in mex_balances.items() if abs(bal - avg_balance) > min_balance]
+
+    for from_ex, from_bal in exchanges_to_adjust:
+        if from_bal > avg_balance:
+            for to_ex, to_bal in exchanges_to_adjust:
+                if to_bal < avg_balance:
+                    transfer_amount = min(from_bal - avg_balance, avg_balance - to_bal)
+
+                    from_exchange = next(ex for ex in exchanges if getattr(ex, 'id', ex.exchange_id) == from_ex)
+                    to_exchange = next(ex for ex in exchanges if getattr(ex, 'id', ex.exchange_id) == to_ex)
+
+                    if isinstance(from_exchange, SandboxExchange) and isinstance(to_exchange, SandboxExchange):
+                        from_exchange.balances['MEX'] -= transfer_amount
+                        to_exchange.balances['MEX'] += transfer_amount
+                    else:
+                        # For real exchanges, use the transfer method
+                        await from_exchange.transfer('MEX', transfer_amount, to_exchange.id)
+
+                    logging.info(f"Transferred {transfer_amount} MEX from {from_ex} to {to_ex}")
+
+                    from_bal -= transfer_amount
+                    to_bal += transfer_amount
+                    if abs(from_bal - avg_balance) <= min_balance:
+                        break
 async def main():
     exchanges = []  # Initialize exchanges at the beginning of the function
     try:
-        logging.info("Starting main function")
-
+        start_time = datetime.now()
+        iteration = 0
         # Fetch historical data and perform backtesting initially
         historical_data = await fetch_all_historical_data()
         backtest_results = backtest(historical_data)
         best_threshold, best_profit = optimize_strategy(backtest_results)
-
-        logging.info(
-            f"Backtesting results: Best threshold = {best_threshold:.2f}%, Best total profit = {best_profit:.2f}%")
 
         portfolio = Portfolio(num_exchanges=len(exchange_ids))
 
@@ -1008,102 +1121,95 @@ async def main():
 
         while True:
             try:
-                logging.info("Fetching current prices...")
                 prices = await get_prices()
-
+                if iteration % 10 == 0:  # Every 10 iterations
+                    await rebalance_usdt(exchanges)
                 if not prices:
                     logging.warning("Failed to fetch prices from any exchange. Skipping this iteration.")
                     await asyncio.sleep(config['polling_interval'])
+                    iteration += 1
                     continue
 
-                logging.info(f"Fetched prices: {prices}")
-                logging.info(f"Current balances before trade:")
-                for exchange in exchanges:
-                    logging.info(f"{exchange.exchange_id}: {exchange.balances}")
-
                 if len(prices) >= 2:
-                    arbitrage_profit, min_price_exchange, max_price_exchange, price_diff, potential_profit = calculate_arbitrage(
-                        prices)
+                    arbitrage_profit, min_price_exchange, max_price_exchange, price_diff, potential_profit = calculate_arbitrage(prices)
                     metrics.set('arbitrage_profit', arbitrage_profit)
                     should_execute = False
 
-                    if arbitrage_profit > best_threshold:
+                    if arbitrage_profit > 0.1:
                         try:
                             df = prepare_ml_data(portfolio)
                             if df is not None and len(df) >= 100:  # Only proceed with ML if we have enough data
-                                logging.info(f"Prepared ML data shape: {df.shape}")
-
-                                # Split the data for training and evaluation
                                 X = df[['average_price', 'returns', 'volatility']]
                                 y = df['target']
-                                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3,
-                                                                                    random_state=42)
+                                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
                                 # Train the model
                                 model = train_ml_model(X_train, y_train)
 
                                 # Evaluate the model
                                 accuracy = model.score(X_test, y_test)
-                                logging.info(f"Current model accuracy: {accuracy:.2f}")
 
                                 # Make prediction
                                 latest_data = df.iloc[-1][['average_price', 'returns', 'volatility']]
                                 prediction = model.predict([latest_data])[0]
 
                                 if prediction:
-                                    logging.info(f"ML model predicts profitable trade. Executing arbitrage...")
                                     should_execute = True
                                 else:
-                                    logging.info("ML model predicts unprofitable trade. Skipping arbitrage.")
-                            else:
-                                logging.info(f"Not enough data for ML prediction. Using fallback strategy.")
-                                # Simple fallback strategy
-                                should_execute = arbitrage_profit > 0.5  # You can adjust this threshold
-                                if should_execute:
-                                    logging.info(f"Fallback strategy suggests executing arbitrage.")
-                                else:
-                                    logging.info(f"Fallback strategy suggests skipping arbitrage.")
+                                    # Simple fallback strategy
+                                    should_execute = arbitrage_profit > 0.10  # You can adjust this threshold
 
                             if should_execute:
-                                # Calculate position size (you may want to adjust this logic)
-                                position_size = min(exchanges[0].balances['MEX'],
-                                                    exchanges[1].balances['MEX']) * 0.1  # Use 10% of available MEX
-
-                                # Execute buy order on the lower-priced exchange
+                                # Calculate position sizes
                                 buy_exchange = next(ex for ex in exchanges if ex.exchange_id == min_price_exchange)
-                                buy_order = await buy_exchange.create_order('MEX/USDT', 'limit', 'buy', position_size,
-                                                                            prices[min_price_exchange])
+                                buy_position_size = calculate_position_size(buy_exchange, prices[min_price_exchange])
 
-                                # Execute sell order on the higher-priced exchange
                                 sell_exchange = next(ex for ex in exchanges if ex.exchange_id == max_price_exchange)
-                                sell_order = await sell_exchange.create_order('MEX/USDT', 'limit', 'sell',
-                                                                              position_size, prices[max_price_exchange])
+                                sell_position_size = min(sell_exchange.balances['MEX'], 40_000_000)
 
-                                profit = (prices[max_price_exchange] - prices[min_price_exchange]) * position_size
-                                logging.info(f"Arbitrage executed. Profit: {profit:.8f} USDT")
+                                position_size = min(buy_position_size, sell_position_size)
 
-                                # Record trades in portfolio
-                                portfolio.record_trade(buy_order, buy_exchange.exchange_id)
-                                portfolio.record_trade(sell_order, sell_exchange.exchange_id)
+                                if position_size > 0:
+                                    # Execute buy order on the lower-priced exchange
+                                    buy_order = await buy_exchange.create_order('MEX/USDT', 'limit', 'buy',
+                                                                                position_size,
+                                                                                prices[min_price_exchange])
 
-                                # Update balances
-                                await portfolio.update_balances(exchanges)
+                                    # Execute sell order on the higher-priced exchange
+                                    sell_order = await sell_exchange.create_order('MEX/USDT', 'limit', 'sell',
+                                                                                  position_size,
+                                                                                  prices[max_price_exchange])
+
+                                    profit = (prices[max_price_exchange] - prices[min_price_exchange]) * position_size
+
+                                    # Record trades in portfolio
+                                    portfolio.record_trade(buy_order, buy_exchange.exchange_id)
+                                    portfolio.record_trade(sell_order, sell_exchange.exchange_id)
+
+                                    # Update balances
+                                    await portfolio.update_balances(exchanges)
+
+                                    logging.info(
+                                        f"Executed arbitrage: Bought {position_size} MEX at {prices[min_price_exchange]} on {min_price_exchange}")
+                                    logging.info(
+                                        f"Sold {position_size} MEX at {prices[max_price_exchange]} on {max_price_exchange}")
+                                    logging.info(f"Profit: {profit:.8f} USDT")
+                                else:
+                                    logging.info(
+                                        f"Insufficient balance to execute arbitrage. Buy position size: {buy_position_size}, Sell position size: {sell_position_size}")
                             else:
-                                logging.info("Skipping arbitrage based on prediction or fallback strategy.")
-
+                                logging.info(
+                                    f"Arbitrage opportunity found but not executed. Profit: {arbitrage_profit:.8f}, Threshold: {best_threshold:.8f}")
                         except Exception as e:
                             logging.error(f"Error in ML prediction or trade execution: {e}", exc_info=True)
 
                 await portfolio.update_balances(exchanges)
                 current_total_value = await portfolio.calculate_total_value(exchanges)
 
-                logging.info(f"Updated balances after trade:")
-                for exchange in exchanges:
-                    logging.info(f"{exchange.exchange_id}: {exchange.balances}")
-
                 coin_changes = portfolio.get_coin_changes()
                 total_value_change, total_value_percent_change = portfolio.get_total_value_change(current_total_value)
 
+                # Generate report every iteration
                 report = portfolio.get_performance_report()
                 report += f"\nTotal Portfolio Value: ${current_total_value:.2f}\n"
                 report += f"Total Value Change: ${total_value_change:+.2f} ({total_value_percent_change:+.2f}%)\n"
@@ -1113,7 +1219,7 @@ async def main():
                 report += f"Weekly Profit: ${weekly_profit:.2f}\n"
                 report += f"Monthly Profit: ${monthly_profit:.2f}\n"
 
-                logging.info(report)
+                logging.info(f"Performance Report:\n{report}")
 
                 metrics.set(DAILY_PROFIT, daily_profit)
                 metrics.set(WEEKLY_PROFIT, weekly_profit)
@@ -1124,6 +1230,7 @@ async def main():
                 metrics.save_to_file('arbitrage_metrics.json')
 
                 await asyncio.sleep(config['polling_interval'])
+                iteration += 1
 
             except ccxt.ExchangeError as e:
                 if 'LBank' in str(e):
