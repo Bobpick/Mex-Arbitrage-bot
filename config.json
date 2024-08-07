@@ -1,0 +1,10 @@
+{
+  "exchange_ids": ["bitrue", "ascendex", "lbank"],
+  "polling_interval": 60,
+  "sandbox_mode": true,
+  "wallet_addresses": {
+    "lbank": "erd1zx70kjt30r8la9dj3vfvz28nvfpa5rlghkvxzfxfevckldqn7t6qgas3hh",
+    "bitrue": "erd1c0klzjea0766zydc0yqg425sdgjq94vpkz2g6w8y2gnwucqt9qwq4upws7",
+    "ascendex": "erd1kkwxl55ugjnmeypdvcyrwzg2gj8duwzrkn4sx7fef5dhtlcf4wrsncjm84"
+  }
+}
