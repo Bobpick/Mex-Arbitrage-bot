@@ -4,7 +4,15 @@
 
 This Crypto Arbitrage Bot is an advanced trading system designed to capitalize on price differences across multiple cryptocurrency exchanges. It focuses on the MEX/USDT trading pair and utilizes real-time data, historical analysis, and machine learning to make informed trading decisions.
 
+
+## Demo
+
+Check out a demo of the Crypto Arbitrage Bot in action:
+
+[Watch the Demo Video](https://github.com/Bobpick/Mex-Arbitrage-bot/blob/main/Mex_Bot.mp4?raw=true)
+
 ## THIS PROGRAM IS STILL IN THE TESTING PHASES!! 
+
 
 ## Features
 
