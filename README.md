@@ -4,6 +4,8 @@
 
 This Crypto Arbitrage Bot is an advanced trading system designed to capitalize on price differences across multiple cryptocurrency exchanges. It focuses on the MEX/USDT trading pair and utilizes real-time data, historical analysis, and machine learning to make informed trading decisions.
 
+## THIS PROGRAM IS STILL IN THE TESTING PHASES!! 
+
 ## Features
 
 - **Multi-exchange support**: LBank, Bitrue, AscendEx
