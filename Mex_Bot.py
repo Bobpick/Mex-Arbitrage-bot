@@ -958,7 +958,7 @@ def calculate_profits(portfolio):
 
     def profit_in_period(trades):
         return sum(trade['cost'] if trade['side'] == 'sell' else -trade['cost']
-                   for trade in trades if not trade['is_initial_conversion'])
+                   for trade in trades if not trade.get('is_initial_conversion', False))
 
     daily_profit = profit_in_period([t for t in portfolio.trade_history if t['time'] > daily_cutoff])
     weekly_profit = profit_in_period([t for t in portfolio.trade_history if t['time'] > weekly_cutoff])
@@ -966,11 +966,11 @@ def calculate_profits(portfolio):
 
     return daily_profit, weekly_profit, monthly_profit
 
-def calculate_position_size(exchange, max_percentage=0.95):
+def calculate_position_size(exchange, price, max_percentage=0.95):
     usdt_balance = exchange.balances['USDT']
-    mex_price = prices[exchange.exchange_id]
-    max_mex_amount = (usdt_balance * max_percentage) / mex_price
+    max_mex_amount = (usdt_balance * max_percentage) / price
     return min(max_mex_amount, 40_000_000)  # Limit to 40M MEX or available balance
+
 def prepare_ml_data(portfolio):
     #logging.info("Preparing ML data...")
     df = pd.DataFrame(portfolio.trade_history)
@@ -1135,73 +1135,80 @@ async def main():
                     metrics.set('arbitrage_profit', arbitrage_profit)
                     should_execute = False
 
-                    if arbitrage_profit > 0.1:
-                        try:
-                            df = prepare_ml_data(portfolio)
-                            if df is not None and len(df) >= 100:  # Only proceed with ML if we have enough data
-                                X = df[['average_price', 'returns', 'volatility']]
-                                y = df['target']
-                                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+                    if arbitrage_profit > best_threshold:
+                        logging.info(
+                            f"Arbitrage opportunity found. Profit: {arbitrage_profit:.8f}, Threshold: {best_threshold:.8f}")
 
-                                # Train the model
-                                model = train_ml_model(X_train, y_train)
+                        should_execute = True
 
-                                # Evaluate the model
-                                accuracy = model.score(X_test, y_test)
+                        if should_execute:
+                            # Calculate position sizes
+                            buy_exchange = next(ex for ex in exchanges if ex.exchange_id == min_price_exchange)
+                            sell_exchange = next(ex for ex in exchanges if ex.exchange_id == max_price_exchange)
 
-                                # Make prediction
-                                latest_data = df.iloc[-1][['average_price', 'returns', 'volatility']]
-                                prediction = model.predict([latest_data])[0]
+                            buy_price = prices[min_price_exchange]
+                            sell_price = prices[max_price_exchange]
 
-                                if prediction:
-                                    should_execute = True
-                                else:
-                                    # Simple fallback strategy
-                                    should_execute = arbitrage_profit > 0.10  # You can adjust this threshold
+                            buy_position_size = calculate_position_size(buy_exchange, buy_price)
+                            sell_position_size = min(sell_exchange.balances['MEX'], 40_000_000)
 
-                            if should_execute:
-                                # Calculate position sizes
-                                buy_exchange = next(ex for ex in exchanges if ex.exchange_id == min_price_exchange)
-                                buy_position_size = calculate_position_size(buy_exchange, prices[min_price_exchange])
+                            position_size = min(buy_position_size, sell_position_size)
 
-                                sell_exchange = next(ex for ex in exchanges if ex.exchange_id == max_price_exchange)
-                                sell_position_size = min(sell_exchange.balances['MEX'], 40_000_000)
+                            logging.info(
+                                f"Calculated position sizes - Buy: {buy_position_size}, Sell: {sell_position_size}, Final: {position_size}")
 
-                                position_size = min(buy_position_size, sell_position_size)
-
-                                if position_size > 0:
+                            if position_size > 0:
+                                try:
                                     # Execute buy order on the lower-priced exchange
                                     buy_order = await buy_exchange.create_order('MEX/USDT', 'limit', 'buy',
-                                                                                position_size,
-                                                                                prices[min_price_exchange])
+                                                                                position_size, buy_price)
 
                                     # Execute sell order on the higher-priced exchange
                                     sell_order = await sell_exchange.create_order('MEX/USDT', 'limit', 'sell',
-                                                                                  position_size,
-                                                                                  prices[max_price_exchange])
+                                                                                  position_size, sell_price)
 
-                                    profit = (prices[max_price_exchange] - prices[min_price_exchange]) * position_size
+                                    profit = (sell_price - buy_price) * position_size
 
                                     # Record trades in portfolio
-                                    portfolio.record_trade(buy_order, buy_exchange.exchange_id)
-                                    portfolio.record_trade(sell_order, sell_exchange.exchange_id)
+                                    # Modify this part to handle potential missing 'cost' attribute
+                                    buy_trade = {
+                                        'symbol': 'MEX/USDT',
+                                        'side': 'buy',
+                                        'amount': position_size,
+                                        'price': buy_price,
+                                        'cost': position_size * buy_price,  # Calculate cost if not provided
+                                        'exchange': buy_exchange.exchange_id
+                                    }
+                                    sell_trade = {
+                                        'symbol': 'MEX/USDT',
+                                        'side': 'sell',
+                                        'amount': position_size,
+                                        'price': sell_price,
+                                        'cost': position_size * sell_price,  # Calculate cost if not provided
+                                        'exchange': sell_exchange.exchange_id
+                                    }
+
+                                    # For regular trades
+                                    portfolio.record_trade(buy_trade, buy_exchange.exchange_id)
+                                    portfolio.record_trade(sell_trade, sell_exchange.exchange_id)
 
                                     # Update balances
                                     await portfolio.update_balances(exchanges)
 
                                     logging.info(
-                                        f"Executed arbitrage: Bought {position_size} MEX at {prices[min_price_exchange]} on {min_price_exchange}")
-                                    logging.info(
-                                        f"Sold {position_size} MEX at {prices[max_price_exchange]} on {max_price_exchange}")
+                                        f"Executed arbitrage: Bought {position_size} MEX at {buy_price} on {min_price_exchange}")
+                                    logging.info(f"Sold {position_size} MEX at {sell_price} on {max_price_exchange}")
                                     logging.info(f"Profit: {profit:.8f} USDT")
-                                else:
-                                    logging.info(
-                                        f"Insufficient balance to execute arbitrage. Buy position size: {buy_position_size}, Sell position size: {sell_position_size}")
+                                except Exception as e:
+                                    logging.error(f"Error executing trade: {str(e)}")
+                                    logging.error(f"Buy order details: {buy_order}")
+                                    logging.error(f"Sell order details: {sell_order}")
                             else:
                                 logging.info(
-                                    f"Arbitrage opportunity found but not executed. Profit: {arbitrage_profit:.8f}, Threshold: {best_threshold:.8f}")
-                        except Exception as e:
-                            logging.error(f"Error in ML prediction or trade execution: {e}", exc_info=True)
+                                    f"Insufficient balance to execute arbitrage. Buy position size: {buy_position_size}, Sell position size: {sell_position_size}")
+                    else:
+                        logging.info(
+                            f"No arbitrage opportunity. Profit: {arbitrage_profit:.8f}, Threshold: {best_threshold:.8f}")
 
                 await portfolio.update_balances(exchanges)
                 current_total_value = await portfolio.calculate_total_value(exchanges)
